@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Online Quiz System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Segoe+UI:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f5f7;
+        }
+        /* Moodle / Canvas style light cyan quiz box background */
+        .quiz-container {
+            background-color: #ebf5f7;
+            border: 1px solid #d3e5e9;
+        }
+        .custom-radio {
+            accent-color: #0066cc;
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-start p-4 md:p-8 text-gray-800">
+
+    <!-- Main Wrapper -->
+    <div class="w-full max-w-4xl space-y-4">
+        
+        <!-- Header Info / Progress -->
+        <div class="flex justify-between items-center bg-white p-4 rounded shadow-sm border border-gray-200">
+            <h1 class="text-xl font-semibold text-gray-700">Computer Networking Quiz</h1>
+            <div class="text-sm font-medium text-gray-600" id="quiz-progress">
+                Question 1 of 5
+            </div>
+        </div>
+
+        <!-- Quiz Main Box (Matching image design) -->
+        <div class="quiz-container p-6 md:p-8 rounded-sm shadow-sm relative transition-all duration-300">
+            
+            <!-- Question Text -->
+            <div id="question-text" class="text-base md:text-lg text-gray-800 leading-relaxed font-normal mb-6">
+                <!-- Question will load dynamically -->
+            </div>
+
+            <!-- "Select one:" label -->
+            <div class="text-sm text-gray-700 mb-4">Select one:</div>
+
+            <!-- Choices List -->
+            <div id="choices-container" class="space-y-5 ml-2">
+                <!-- Choices will load dynamically -->
+            </div>
+        </div>
+
+        <!-- Navigation Buttons -->
+        <div class="flex justify-between items-center pt-2">
+            <button id="prev-btn" onclick="navigateQuestion(-1)" class="px-5 py-2.5 bg-gray-600 hover:bg-gray-700 text-white font-medium text-sm rounded shadow transition duration-150 disabled:opacity-40 disabled:cursor-not-allowed">
+                Previous page
+            </button>
+
+            <button id="next-btn" onclick="navigateQuestion(1)" class="px-6 py-2.5 bg-[#0062bd] hover:bg-[#004f98] text-white font-medium text-sm rounded shadow transition duration-150">
+                Next page
+            </button>
+        </div>
+
+        <!-- Results Card (Hidden by default) -->
+        <div id="results-card" class="hidden bg-white p-6 rounded-md shadow border border-gray-200 text-center space-y-4">
+            <h2 class="text-2xl font-bold text-gray-800">Quiz Completed!</h2>
+            <p class="text-lg text-gray-600">Your total score: <span id="final-score" class="font-bold text-blue-600">0</span> / <span id="total-questions">0</span></p>
+            <button onclick="restartQuiz()" class="px-6 py-2.5 bg-green-600 hover:bg-green-700 text-white font-medium text-sm rounded shadow transition duration-150">
+                Try Again
+            </button>
+        </div>
+
+    </div>
+
+    <script>
+        // Array of questions matching the topic
+        const quizData = [
+            {
+                id: 1,
+                question: "An employee at a branch office is creating a quote for a customer. In order to do this, the employee needs to access confidential pricing information from internal servers at the Head Office. What type of network would the employee access?",
+                choices: [
+                    { key: "a", text: "an intranet" },
+                    { key: "b", text: "a local area network" },
+                    { key: "c", text: "the Internet" },
+                    { key: "d", text: "an extranet" }
+                ],
+                correct: "a"
+            },
+            {
+                id: 2,
+                question: "Which layer of the OSI model is responsible for logical addressing and routing packets across different networks?",
+                choices: [
+                    { key: "a", text: "Data Link Layer" },
+                    { key: "b", text: "Network Layer" },
+                    { key: "c", text: "Transport Layer" },
+                    { key: "d", text: "Physical Layer" }
+                ],
+                correct: "b"
+            },
+            {
+                id: 3,
+                question: "A company wants to allow external suppliers to access its inventory control system securely over the internet. What type of network should be implemented?",
+                choices: [
+                    { key: "a", text: "a local area network" },
+                    { key: "b", text: "an intranet" },
+                    { key: "c", text: "an extranet" },
+                    { key: "d", text: "a storage area network" }
+                ],
+                correct: "c"
+            },
+            {
+                id: 4,
+                question: "What protocol is automatically used by modern network devices to assign dynamic IP addresses to end systems?",
+                choices: [
+                    { key: "a", text: "DNS" },
+                    { key: "b", text: "HTTP" },
+                    { key: "c", text: "DHCP" },
+                    { key: "d", text: "FTP" }
+                ],
+                correct: "c"
+            },
+            {
+                id: 5,
+                question: "Which device connects multiple networks together and directs data traffic based on IP addresses?",
+                choices: [
+                    { key: "a", text: "Switch" },
+                    { key: "b", text: "Hub" },
+                    { key: "c", text: "Router" },
+                    { key: "d", text: "Repeater" }
+                ],
+                correct: "c"
+            }
+        ];
+
+        let currentQuestionIndex = 0;
+        let userAnswers = {};
+
+        function loadQuestion() {
+            const q = quizData[currentQuestionIndex];
+
+            // Update Progress Header
+            document.getElementById('quiz-progress').innerText = `Question ${currentQuestionIndex + 1} of ${quizData.length}`;
+
+            // Update Question Text
+            document.getElementById('question-text').innerText = q.question;
+
+            // Render Choices
+            const choicesContainer = document.getElementById('choices-container');
+            choicesContainer.innerHTML = '';
+
+            q.choices.forEach(choice => {
+                const isChecked = userAnswers[currentQuestionIndex] === choice.key ? 'checked' : '';
+                
+                const choiceOption = document.createElement('div');
+                choiceOption.className = 'flex items-center space-x-3 cursor-pointer select-none';
+                choiceOption.innerHTML = `
+                    <input type="radio" 
+                           id="choice-${choice.key}" 
+                           name="quiz-option" 
+                           value="${choice.key}" 
+                           ${isChecked}
+                           onchange="selectAnswer('${choice.key}')"
+                           class="custom-radio mt-0.5">
+                    <label for="choice-${choice.key}" class="cursor-pointer text-gray-800 text-base leading-snug flex items-center gap-2">
+                        <span class="font-normal text-gray-700">${choice.key}.</span>
+                        <span>${choice.text}</span>
+                    </label>
+                `;
+                choicesContainer.appendChild(choiceOption);
+            });
+
+            // Update Button States
+            document.getElementById('prev-btn').disabled = currentQuestionIndex === 0;
+            
+            const nextBtn = document.getElementById('next-btn');
+            if (currentQuestionIndex === quizData.length - 1) {
+                nextBtn.innerText = 'Finish attempt';
+                nextBtn.classList.remove('bg-[#0062bd]', 'hover:bg-[#004f98]');
+                nextBtn.classList.add('bg-green-600', 'hover:bg-green-700');
+            } else {
+                nextBtn.innerText = 'Next page';
+                nextBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
+                nextBtn.classList.add('bg-[#0062bd]', 'hover:bg-[#004f98]');
+            }
+        }
+
+        function selectAnswer(key) {
+            userAnswers[currentQuestionIndex] = key;
+        }
+
+        function navigateQuestion(direction) {
+            currentQuestionIndex += direction;
+
+            if (currentQuestionIndex >= quizData.length) {
+                showResults();
+            } else {
+                loadQuestion();
+            }
+        }
+
+        function showResults() {
+            let score = 0;
+            quizData.forEach((q, index) => {
+                if (userAnswers[index] === q.correct) {
+                    score++;
+                }
+            });
+
+            document.querySelector('.quiz-container').classList.add('hidden');
+            document.querySelector('.flex.justify-between.items-center.pt-2').classList.add('hidden');
+            
+            const resultsCard = document.getElementById('results-card');
+            resultsCard.classList.remove('hidden');
+            document.getElementById('final-score').innerText = score;
+            document.getElementById('total-questions').innerText = quizData.length;
+        }
+
+        function restartQuiz() {
+            currentQuestionIndex = 0;
+            userAnswers = {};
+            document.querySelector('.quiz-container').classList.remove('hidden');
+            document.querySelector('.flex.justify-between.items-center.pt-2').classList.remove('hidden');
+            document.getElementById('results-card').classList.add('hidden');
+            loadQuestion();
+        }
+
+        window.onload = function() {
+            loadQuestion();
+        };
+    </script>
+</body>
+</html>
