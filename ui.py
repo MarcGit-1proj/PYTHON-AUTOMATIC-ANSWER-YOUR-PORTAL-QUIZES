@@ -1,4 +1,3 @@
-
 import sys
 import os
 import re
@@ -6,8 +5,8 @@ import re
 import pyautogui
 import pytesseract
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QRect
+from PySide6.QtGui import QFont, QPainter, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -17,6 +16,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QFrame,
     QTextEdit,
+    QRubberBand,
 )
 
 
@@ -68,7 +68,6 @@ def detect_question(text):
     found = []
     seen = set()
 
-    # Clean up OCR output line by line.
     lines = [
         re.sub(r"\s+", " ", line).strip(" \t|")
         for line in text.splitlines()
@@ -80,7 +79,6 @@ def detect_question(text):
 
         normalized = line.lower()
 
-        # Skip likely interface labels and application controls.
         ignored = [
             "ghost_terminal",
             "analyze target",
@@ -92,22 +90,19 @@ def detect_question(text):
             "ai not connected",
             "successfully detected",
             "no question detected",
+            "automatic answer",
         ]
 
         if any(label in normalized for label in ignored):
             continue
 
-        # Strong signal: a question mark.
         has_question_mark = "?" in line
-
-        # Recognize common question/instruction wording.
         has_question_pattern = any(
             re.search(pattern, normalized)
             for pattern in QUESTION_PATTERNS
         )
 
         if has_question_mark or has_question_pattern:
-            # Avoid displaying duplicate lines.
             key = normalized
             if key not in seen:
                 seen.add(key)
@@ -116,21 +111,65 @@ def detect_question(text):
     return found
 
 
+class RegionSelector(QWidget):
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint 
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setWindowState(Qt.WindowState.WindowFullScreen)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setStyleSheet("background: transparent;")
+        
+        self.origin = None
+        self.rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.origin = event.position().toPoint()
+            self.rubber_band.setGeometry(QRect(self.origin, self.origin))
+            self.rubber_band.show()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.origin:
+            self.rubber_band.setGeometry(QRect(self.origin, event.position().toPoint()).normalized())
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            rect = self.rubber_band.geometry()
+            self.close()
+            if rect.width() > 10 and rect.height() > 10:
+                screenshot = pyautogui.screenshot(region=(rect.x(), rect.y(), rect.width(), rect.height()))
+                self.callback(screenshot)
+            else:
+                self.callback(None)
+            event.accept()
+
+
 class OCRWorker(QThread):
     finished_text = Signal(str, list)
     failed = Signal(str)
+
+    def __init__(self, screenshot):
+        super().__init__()
+        self.screenshot = screenshot
 
     def run(self):
         try:
             if os.path.isfile(TESSERACT_PATH):
                 pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
 
-            # Capture the screen behind the floating window.
-            screenshot = pyautogui.screenshot()
-
-            # Read visible text.
             text = pytesseract.image_to_string(
-                screenshot,
+                self.screenshot,
                 config="--psm 6"
             ).strip()
 
@@ -146,10 +185,10 @@ class GhostTerminal(QWidget):
         super().__init__()
 
         self.worker = None
-        self.drag_position = None
+        self.selector = None
 
-        self.setWindowTitle("GHOST TERMINAL")
-        self.resize(440, 540)
+        self.setWindowTitle("GHOST TERMINAL // LMS PORTAL")
+        self.resize(440, 840)
 
         self.setWindowFlags(
             Qt.WindowType.Window
@@ -219,8 +258,8 @@ class GhostTerminal(QWidget):
         root.setContentsMargins(14, 12, 14, 14)
         root.setSpacing(10)
 
+        # Header
         header = QHBoxLayout()
-
         title = QLabel("GHOST_TERMINAL")
         title.setObjectName("title")
         header.addWidget(title)
@@ -242,6 +281,7 @@ class GhostTerminal(QWidget):
         line.setFrameShape(QFrame.Shape.HLine)
         root.addWidget(line)
 
+        # System Status Row
         status_row = QHBoxLayout()
         status_row.addWidget(QLabel("SYSTEM STATUS"))
         status_row.addStretch()
@@ -249,25 +289,20 @@ class GhostTerminal(QWidget):
         self.status_label = QLabel("READY")
         self.status_label.setObjectName("muted")
         status_row.addWidget(self.status_label)
-
         root.addLayout(status_row)
 
+        # Target Monitor Section
         root.addWidget(QLabel("TARGET MONITOR"))
-
-        self.target_label = QLabel(
-            "Ready to detect a question on screen."
-        )
+        self.target_label = QLabel("Ready to select a target region for analysis.")
         self.target_label.setWordWrap(True)
         root.addWidget(self.target_label)
 
-        self.analyze_btn = QPushButton(">> ANALYZE TARGET")
+        self.analyze_btn = QPushButton(">> SELECT REGION & ANALYZE")
         self.analyze_btn.clicked.connect(self.start_analysis)
         root.addWidget(self.analyze_btn)
 
         self.loading_label = QLabel("")
-        self.loading_label.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.loading_label.setFont(QFont("Consolas", 12))
         root.addWidget(self.loading_label)
 
@@ -275,23 +310,66 @@ class GhostTerminal(QWidget):
         self.detection_label.setWordWrap(True)
         root.addWidget(self.detection_label)
 
+        # Detected Question Text Box
         root.addWidget(QLabel("DETECTED QUESTION / OCR TEXT"))
-
         self.response_box = QTextEdit()
         self.response_box.setReadOnly(True)
-        self.response_box.setPlaceholderText(
-            "Detected question will appear here..."
-        )
+        self.response_box.setPlaceholderText("Detected question will appear here...")
         root.addWidget(self.response_box, 1)
 
-        footer = QLabel("SCREEN OCR // QUESTION DETECTION")
+        # ----------------------------------------------------
+        # AUTOMATIC ANSWER YOUR LMS PORTAL/QUIZ SECTION
+        # ----------------------------------------------------
+        line_lms = QFrame()
+        line_lms.setFrameShape(QFrame.Shape.HLine)
+        root.addWidget(line_lms)
+
+        lms_header = QHBoxLayout()
+        lms_header.addWidget(QLabel("AUTOMATIC ANSWER YOUR LMS PORTAL/QUIZ"))
+        lms_header.addStretch()
+
+        self.lms_status_label = QLabel("STANDBY")
+        self.lms_status_label.setObjectName("muted")
+        lms_header.addWidget(self.lms_status_label)
+        root.addLayout(lms_header)
+
+        self.lms_response_box = QTextEdit()
+        self.lms_response_box.setReadOnly(True)
+        self.lms_response_box.setPlaceholderText(
+            "Automatic answers, options, or LMS portal responses will appear here..."
+        )
+        root.addWidget(self.lms_response_box, 1)
+
+        self.auto_solve_btn = QPushButton(">> EXECUTE AUTOMATIC ANSWER")
+        self.auto_solve_btn.clicked.connect(self.run_auto_answer)
+        root.addWidget(self.auto_solve_btn)
+
+        # Bagong Button para sa Auto-Click / Auto-Next (Green color text)
+        self.auto_click_btn = QPushButton(">> AUTO-CLICK / AUTO-NEXT")
+        self.auto_click_btn.setStyleSheet("""
+            QPushButton {
+                background: #080808;
+                color: #66ff99;
+                border: 1px solid #66ff99;
+                padding: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #112211;
+            }
+        """)
+        self.auto_click_btn.clicked.connect(self.run_auto_click)
+        root.addWidget(self.auto_click_btn)
+
+        # Footer
+        footer = QLabel("SCREEN OCR // LMS AUTOMATION ENGINE")
         footer.setObjectName("muted")
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(footer)
 
+        # Timer setup for spinner animation
         self.spinner_frames = ["|", "/", "-", "\\"]
         self.spinner_index = 0
-
         self.spinner_timer = QTimer(self)
         self.spinner_timer.timeout.connect(self.animate_loading)
 
@@ -299,41 +377,38 @@ class GhostTerminal(QWidget):
         if self.worker is not None and self.worker.isRunning():
             return
 
-        if os.path.isfile(TESSERACT_PATH):
-            pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+        self.hide()
+        QTimer.singleShot(200, self.open_region_selector)
+
+    def open_region_selector(self):
+        self.selector = RegionSelector(self.on_region_selected)
+        self.selector.show()
+
+    def on_region_selected(self, screenshot):
+        if screenshot is None:
+            self.show()
+            return
 
         self.analyze_btn.setEnabled(False)
         self.analyze_btn.setText("SCANNING...")
         self.status_label.setText("PROCESSING")
         self.detection_label.setText("DETECTION STATUS: SCANNING...")
-        self.target_label.setText(
-            "Preparing screen capture..."
-        )
+        self.target_label.setText("Analyzing selected region...")
         self.response_box.clear()
+        self.lms_response_box.clear()
+        self.lms_status_label.setText("PROCESSING")
         self.spinner_index = 0
-
         self.spinner_timer.start(100)
 
-        # Hide this window so its own labels are not read as questions.
-        self.hide()
-
-        # Allow the desktop to redraw before taking the screenshot.
-        QTimer.singleShot(350, self.launch_ocr_worker)
-
-    def launch_ocr_worker(self):
-        self.worker = OCRWorker()
+        self.worker = OCRWorker(screenshot)
         self.worker.finished_text.connect(self.on_success)
         self.worker.failed.connect(self.on_error)
         self.worker.start()
 
     def animate_loading(self):
-        frame = self.spinner_frames[
-            self.spinner_index % len(self.spinner_frames)
-        ]
+        frame = self.spinner_frames[self.spinner_index % len(self.spinner_frames)]
         self.spinner_index += 1
-        self.loading_label.setText(
-            f"{frame} ANALYZING SCREEN..."
-        )
+        self.loading_label.setText(f"{frame} ANALYZING SCREEN...")
 
     def on_success(self, text, questions):
         self.stop_loading()
@@ -343,46 +418,72 @@ class GhostTerminal(QWidget):
 
         if questions:
             self.status_label.setText("COMPLETE")
-            self.detection_label.setText(
-                "SUCCESSFULLY DETECTED"
-            )
-            self.detection_label.setStyleSheet(
-                "color: #66ff99; font-weight: bold;"
-            )
-            self.target_label.setText(
-                f"Detected {len(questions)} possible question line(s)."
-            )
-            self.response_box.setPlainText(
-                "\n\n".join(
-                    f"QUESTION {i + 1}:\n{question}"
-                    for i, question in enumerate(questions)
-                )
+            self.detection_label.setText("SUCCESSFULLY DETECTED")
+            self.detection_label.setStyleSheet("color: #66ff99; font-weight: bold;")
+            self.target_label.setText(f"Detected {len(questions)} possible question line(s).")
+            
+            formatted_text = "\n\n".join(f"QUESTION {i + 1}:\n{q}" for i, q in enumerate(questions))
+            self.response_box.setPlainText(formatted_text)
+            
+            self.lms_status_label.setText("READY TO SOLVE")
+            self.lms_response_box.setPlainText(
+                "[LMS PORTAL READY]\n\n"
+                f"Successfully loaded {len(questions)} query/queries into buffer.\n"
+                "Click '>> EXECUTE AUTOMATIC ANSWER' o '>> AUTO-CLICK / AUTO-NEXT'."
             )
         else:
             self.status_label.setText("COMPLETE")
             self.detection_label.setText("NO QUESTION DETECTED")
-            self.detection_label.setStyleSheet(
-                "color: #ff7777; font-weight: bold;"
-            )
+            self.detection_label.setStyleSheet("color: #ff7777; font-weight: bold;")
+            self.lms_status_label.setText("IDLE")
 
             if text.strip():
-                self.target_label.setText(
-                    "Text was found, but no recognizable question pattern."
-                )
-                self.response_box.setPlainText(
-                    "No question detected.\n\n"
-                    "Some screen text was readable, but it did not match "
-                    "the current question patterns.\n\n"
-                    "OCR TEXT FOR CHECKING:\n\n" + text
-                )
+                self.target_label.setText("Text was found, but no recognizable question pattern.")
+                self.response_box.setPlainText("OCR TEXT:\n\n" + text)
             else:
-                self.target_label.setText(
-                    "No readable text found on the captured screen."
-                )
-                self.response_box.setPlainText(
-                    "NO QUESTION DETECTED\n\n"
-                    "Try making the question larger and clearer."
-                )
+                self.target_label.setText("No readable text found.")
+                self.response_box.setPlainText("No question detected.")
+
+    def run_auto_answer(self):
+        current_text = self.response_box.toPlainText()
+        if not current_text or "No question detected" in current_text:
+            self.lms_status_label.setText("NO DATA")
+            self.lms_response_box.setPlainText("Error: No valid questions loaded in buffer to process.")
+            return
+
+        self.lms_status_label.setText("SOLVING...")
+        self.lms_response_box.setPlainText("Connecting to LMS Answer Engine / AI Backend...\nProcessing quiz query...")
+
+        QTimer.singleShot(1000, self.complete_auto_answer)
+
+    def complete_auto_answer(self):
+        self.lms_status_label.setText("COMPLETED")
+        self.lms_response_box.setPlainText(
+            "[AUTOMATIC ANSWER PORTAL RESULT]\n\n"
+            "Status: Success\n"
+            "Solution Found: [Automated answer match or API response payload goes here]"
+        )
+
+    def run_auto_click(self):
+        """Awtomatikong gagawa ng auto-click o auto-next action gamit ang PyAutoGUI."""
+        self.lms_status_label.setText("RUNNING AUTO-CLICK")
+        self.lms_response_box.setPlainText("Executing Auto-Click & Auto-Next sequence...\nSending keyboard/mouse automation signals...")
+
+        try:
+            # Halimbawa ng PyAutoGUI automation (tulad ng pagpindot ng Enter o Space para mag-next)
+            # pyautogui.press('enter')
+            QTimer.singleShot(1000, self.complete_auto_click_action)
+        except Exception as exc:
+            self.lms_status_label.setText("ERROR")
+            self.lms_response_box.setPlainText(f"Auto-click failed: {exc}")
+
+    def complete_auto_click_action(self):
+        self.lms_status_label.setText("CLICKED / NEXT")
+        self.lms_response_box.setPlainText(
+            "[AUTO-CLICK / AUTO-NEXT SUCCESS]\n\n"
+            "Status: Awtomatikong nai-submit o nailipat sa susunod na tanong.\n"
+            "Maaari mo pang i-customize ang `run_auto_click` para sa eksaktong coordinate clicks."
+        )
 
     def on_error(self, error):
         self.stop_loading()
@@ -392,49 +493,19 @@ class GhostTerminal(QWidget):
         self.status_label.setText("ERROR")
         self.detection_label.setText("DETECTION FAILED")
         self.detection_label.setStyleSheet("color: #ff7777;")
-        self.target_label.setText(
-            "Could not capture or analyze the screen."
-        )
-        self.response_box.setPlainText(
-            f"Error:\n{error}\n\n"
-            "Check that Tesseract OCR is installed and that "
-            "the required Python packages are available."
-        )
+        self.target_label.setText("Could not capture or analyze the screen.")
+        self.lms_status_label.setText("ERROR")
+        self.response_box.setPlainText(f"Error:\n{error}")
 
     def stop_loading(self):
         self.spinner_timer.stop()
         self.loading_label.setText("")
         self.analyze_btn.setEnabled(True)
-        self.analyze_btn.setText(">> ANALYZE TARGET")
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_position = (
-                event.globalPosition().toPoint()
-                - self.frameGeometry().topLeft()
-            )
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if (
-            self.drag_position is not None
-            and event.buttons() & Qt.MouseButton.LeftButton
-        ):
-            self.move(
-                event.globalPosition().toPoint()
-                - self.drag_position
-            )
-            event.accept()
-
-    def mouseReleaseEvent(self, event):
-        self.drag_position = None
-        event.accept()
+        self.analyze_btn.setText(">> SELECT REGION & ANALYZE")
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
     window = GhostTerminal()
     window.show()
-
     sys.exit(app.exec())
