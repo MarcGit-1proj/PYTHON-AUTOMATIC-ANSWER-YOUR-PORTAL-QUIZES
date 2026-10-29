@@ -1,1 +1,1 @@
-NOW BASICALLY WE HAVE THE UI OF THE SYSTEM STILL WORKING FOR BACKEND API RESPOSIVENESS""
+A smart automation portal that simplifies student tasks by integrating AI APIs to search, answer questions, and generate solution workflows automatically.
